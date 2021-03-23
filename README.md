@@ -15,5 +15,5 @@ This is a very WIP translation of the C# implementation. There are likely bugs, 
 ## Images
 [Benchmark Results](tree_test.go#L168)
 ![](https://media.discordapp.net/attachments/776682188464062494/823741251513221180/unknown.png)
-Graphical representation of the tree (red=boundary,green=entity):
+Graphical representation of a tree (red=boundary,green=entity):
 ![](map.bmp)
