@@ -7,8 +7,10 @@ import (
 	"math"
 	"os"
 	"sort"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
+
 	"golang.org/x/image/bmp"
 )
 
@@ -434,7 +436,7 @@ func (t *Tree) CreateNode(bucketIndex int) (n *Node) {
 	} else {
 		n = &Node{}
 		t.nodes = append(t.nodes, n)
-		index = len(t.nodes)
+		index = len(t.nodes) - 1
 	}
 
 	n.NodeIndex = index
@@ -506,6 +508,46 @@ func (t *Tree) QueueForOptimize(e Entity) bool {
 	return true
 }
 
+func (t *Tree) ConcurrentTraverseNode(cur *Node, test HitTest) (hits []Entity) {
+	if !cur.IsValid() {
+		return
+	}
+
+	if test(cur.Box) {
+		if cur.BucketIndex != -1 {
+			hits = append(hits, t.Buckets[cur.BucketIndex-1]...)
+		}
+
+		lock := sync.Mutex{}
+		wg := sync.WaitGroup{}
+		if cur.Left != nil {
+			wg.Add(1)
+			go func() {
+				new := t.ConcurrentTraverseNode(cur.Left, test)
+				lock.Lock()
+				hits = append(hits, new...)
+				lock.Unlock()
+				wg.Done()
+			}()
+		}
+
+		if cur.Right != nil {
+			wg.Add(1)
+			go func() {
+				new := t.ConcurrentTraverseNode(cur.Right, test)
+				lock.Lock()
+				hits = append(hits, new...)
+				lock.Unlock()
+				wg.Done()
+			}()
+		}
+
+		wg.Wait()
+	}
+
+	return
+}
+
 func (t *Tree) TraverseNode(cur *Node, test HitTest) (hits []Entity) {
 	if !cur.IsValid() {
 		return
@@ -530,6 +572,10 @@ func (t *Tree) TraverseNode(cur *Node, test HitTest) (hits []Entity) {
 
 func (t *Tree) Traverse(test HitTest) []Entity {
 	return t.TraverseNode(t.rootNode, test)
+}
+
+func (t *Tree) ConcurrentTraverse(test HitTest) []Entity {
+	return t.ConcurrentTraverseNode(t.rootNode, test)
 }
 
 func (t *Tree) TryFindBetterNode(cur *Node, e Entity) (bn *Node, ok bool) {
@@ -633,13 +679,22 @@ func (t *Tree) RemoveItemFromNode(n *Node, e Entity) {
 
 	t.UnmapLeaf(e)
 
-	t.Buckets[n.BucketIndex-1] = append(t.Buckets[n.BucketIndex-1][:n.NodeIndex], t.Buckets[n.BucketIndex-1][n.NodeIndex+1:]...)
+	found := false
+	for i, entity := range t.Buckets[n.BucketIndex-1] {
+		if entity == e {
+			found = true
+			t.Buckets[n.BucketIndex-1] = append(t.Buckets[n.BucketIndex-1][:i], t.Buckets[n.BucketIndex-1][i+1:]...)
+		}
+	}
+	if !found {
+		panic("Entity not found in node")
+	}
 
 	if !t.IsEmpty(n) {
 		t.RefitVolume(n)
 	} else {
 		if n.HasParent() {
-
+			t.RemoveNode(n)
 		}
 	}
 }
@@ -1017,6 +1072,20 @@ func (t *Tree) Add(e Entity) {
 	t.AddObjectToNode(t.rootNode, e, box, box.SurfaceArea())
 }
 
+func (t *Tree) Remove(e Entity) {
+	l, ok := t.GetLeaf(e)
+
+	if !ok {
+		panic("Entity not found")
+	}
+
+	t.RemoveItemFromNode(l, e)
+}
+
+type CustomDrawer interface {
+	DrawImage(*image.RGBA)
+}
+
 func (t *Tree) Image(path string) {
 	frame := image.NewRGBA(image.Rect(int(t.rootNode.Box.Min.X), int(t.rootNode.Box.Min.Y), int(t.rootNode.Box.Max.X)+1, int(t.rootNode.Box.Max.Y)+1))
 	draw.Draw(frame, frame.Bounds(), &image.Uniform{color.Black}, image.ZP, draw.Src)
@@ -1050,6 +1119,10 @@ func (t *Tree) Image(path string) {
 
 	col = color.RGBA{0, 255, 0, 255}
 	for _, e := range entities {
+		if d, ok := e.(CustomDrawer); ok {
+			d.DrawImage(frame)
+			continue
+		}
 		b := BoxFromEntity(e)
 		Rect(int(b.Min.X), int(b.Min.Y), int(b.Max.X), int(b.Max.Y))
 	}
